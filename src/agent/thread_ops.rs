@@ -1244,11 +1244,11 @@ impl Agent {
             // (every tool_call must have a matching tool_result).
             let mut context_messages = pending.context_messages;
             let modification_context = format!(
-                "MODIFICATION_REQUESTED: The user wants to modify the parameters \
-                 for tool '{}' before execution. The tool was NOT executed.\n\
-                 Ask the user what they want to change. Once they tell you, \
-                 use the `modify_draft` tool to update the parameters, then \
-                 re-submit the tool call with the corrected parameters.",
+                "BLOCKED — user chose MODIFY for tool '{}'. \
+                 The tool was NOT executed and MUST NOT be re-submitted yet. \
+                 Do NOT re-describe the action or re-present the parameters. \
+                 Ask the user ONE short question: what do they want to change? \
+                 Wait for their answer before doing anything else.",
                 pending.tool_name
             );
             context_messages.push(ChatMessage::tool_result(
