@@ -309,6 +309,14 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
         const MAX_TOOL_INTENT_NUDGES: u32 = 2;
         let mut consecutive_tool_intent_nudges: u32 = 0;
 
+        // @FORK: Get user id for ResponseTransform hooks
+        let user_id = self
+            .context_manager()
+            .get_context(self.job_id)
+            .await
+            .map(|ctx| ctx.user_id.clone())
+            .unwrap_or_default();
+
         // Initial tool definitions for planning (will be refreshed in loop)
         reason_ctx.available_tools = self.tools().tool_definitions().await;
 
@@ -485,6 +493,20 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
 
                 match respond_output.result {
                     RespondResult::Text(response) => {
+                        // @FORK: Hook: TransformResponse — allow hooks to intercept worker responses
+                        let response = {
+                            use crate::hooks::{HookEvent, HookOutcome};
+                            let event = HookEvent::ResponseTransform {
+                                user_id: user_id.clone(),
+                                thread_id: self.job_id.to_string(),
+                                response: response.clone(),
+                            };
+                            match self.deps.hooks.run(&event).await {
+                                Ok(HookOutcome::Continue { modified: Some(r) }) => r,
+                                _ => response,
+                            }
+                        };
+
                         // Check for explicit completion phrases. Use word-boundary
                         // aware checks to avoid false positives like "incomplete",
                         // "not done", or "unfinished". Only the LLM's own response
@@ -1153,6 +1175,26 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
         ));
 
         let response = reasoning.respond(reason_ctx).await?;
+
+        // @FORK: Hook: TransformResponse — allow hooks to intercept worker responses
+        let response = {
+            use crate::hooks::{HookEvent, HookOutcome};
+            let event = HookEvent::ResponseTransform {
+                user_id: self
+                    .context_manager()
+                    .get_context(self.job_id)
+                    .await
+                    .map(|ctx| ctx.user_id.clone())
+                    .unwrap_or_default(),
+                thread_id: self.job_id.to_string(),
+                response: response.clone(),
+            };
+            match self.deps.hooks.run(&event).await {
+                Ok(HookOutcome::Continue { modified: Some(r) }) => r,
+                _ => response,
+            }
+        };
+
         reason_ctx.messages.push(ChatMessage::assistant(&response));
 
         if crate::util::llm_signals_completion(&response) {
