@@ -1226,40 +1226,84 @@ impl Agent {
                 }
             }
         } else if modify {
-            // Modification requested — deny execution but guide the LLM to
-            // ask the user what to change and re-submit with updated params.
-            let modification_prompt = format!(
-                "Tool '{}' parameters need modification. The user wants to adjust \
-                 some parameters before execution.\n\n\
-                 Ask the user what they\'d like to change. Once they specify the \
-                 changes, use the `modify_draft` tool to update the parameters \
-                 and re-submit the tool call.",
-                pending.tool_name
-            );
+            // Modification requested — inject a tool_result telling the LLM
+            // that the user wants to change parameters, then continue the
+            // agentic loop so the LLM responds naturally (e.g. asking in
+            // the user's language what they'd like to change).
+
+            // Reset thread state to processing (same as the approved path).
             {
                 let mut sess = session.lock().await;
                 if let Some(thread) = sess.threads.get_mut(&thread_id) {
                     thread.clear_pending_approval();
-                    thread.complete_turn(&modification_prompt);
-                    self.persist_assistant_response(
-                        thread_id,
-                        &message.user_id,
-                        &modification_prompt,
-                    )
-                    .await;
+                    thread.state = ThreadState::Processing;
                 }
             }
 
-            let _ = self
-                .channels
-                .send_status(
-                    &message.channel,
-                    StatusUpdate::Status("Modification requested".into()),
-                    &message.metadata,
-                )
+            // Build a synthetic tool_result so the LLM context stays valid
+            // (every tool_call must have a matching tool_result).
+            let mut context_messages = pending.context_messages;
+            let modification_context = format!(
+                "MODIFICATION_REQUESTED: The user wants to modify the parameters \
+                 for tool '{}' before execution. The tool was NOT executed.\n\
+                 Ask the user what they want to change. Once they tell you, \
+                 use the `modify_draft` tool to update the parameters, then \
+                 re-submit the tool call with the corrected parameters.",
+                pending.tool_name
+            );
+            context_messages.push(ChatMessage::tool_result(
+                &pending.tool_call_id,
+                &pending.tool_name,
+                modification_context,
+            ));
+
+            // Continue the agentic loop — the LLM sees the tool_result and
+            // responds to the user (no message is sent directly to the channel).
+            let result = self
+                .run_agentic_loop(message, session.clone(), thread_id, context_messages)
                 .await;
 
-            Ok(SubmissionResult::response(modification_prompt))
+            // Handle loop result — same pattern as the approved-path post-loop.
+            let mut sess = session.lock().await;
+            let thread = sess
+                .threads
+                .get_mut(&thread_id)
+                .ok_or_else(|| Error::from(crate::error::JobError::NotFound { id: thread_id }))?;
+
+            match result {
+                Ok(AgenticLoopResult::Response(response)) => {
+                    thread.complete_turn(&response);
+                    let (turn_number, tool_calls) = thread
+                        .turns
+                        .last()
+                        .map(|t| (t.turn_number, t.tool_calls.clone()))
+                        .unwrap_or_default();
+                    self.persist_tool_calls(thread_id, &message.user_id, turn_number, &tool_calls)
+                        .await;
+                    self.persist_assistant_response(thread_id, &message.user_id, &response)
+                        .await;
+                    Ok(SubmissionResult::response(response))
+                }
+                Ok(AgenticLoopResult::NeedApproval {
+                    pending: new_pending,
+                }) => {
+                    let request_id = new_pending.request_id;
+                    let tool_name = new_pending.tool_name.clone();
+                    let description = new_pending.description.clone();
+                    let parameters = new_pending.display_parameters.clone();
+                    thread.await_approval(new_pending);
+                    Ok(SubmissionResult::NeedApproval {
+                        request_id,
+                        tool_name,
+                        description,
+                        parameters,
+                    })
+                }
+                Err(e) => {
+                    thread.fail_turn(e.to_string());
+                    Ok(SubmissionResult::error(e.to_string()))
+                }
+            }
         } else {
             // Rejected - complete the turn with a rejection message and persist
             let rejection = format!(
