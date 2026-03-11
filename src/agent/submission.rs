@@ -184,6 +184,9 @@ impl SubmissionParser {
                     always: false,
                 };
             }
+            "modify" | "m" | "edit" | "/modify" | "/m" | "/edit" => {
+                return Submission::ModifyApproval;
+            }
             _ => {}
         }
 
@@ -220,6 +223,13 @@ pub enum Submission {
         /// If true, auto-approve this tool for the rest of the session.
         always: bool,
     },
+
+    /// User wants to modify tool parameters before execution.
+    ///
+    /// Denies the current tool call but injects a modification prompt into
+    /// the conversation so the LLM asks the user what to change and can
+    /// re-submit with updated parameters (e.g. via `modify_draft`).
+    ModifyApproval,
 
     /// Interrupt the current turn.
     Interrupt,
@@ -593,6 +603,34 @@ mod tests {
                 approved: false,
                 always: false
             }
+        ));
+    }
+
+    #[test]
+    fn test_parser_modify_approval_aliases() {
+        // All modify aliases should parse to ModifyApproval
+        for input in &["modify", "m", "edit", "/modify", "/m", "/edit"] {
+            assert!(
+                matches!(SubmissionParser::parse(input), Submission::ModifyApproval),
+                "Expected ModifyApproval for input: {:?}",
+                input
+            );
+        }
+
+        // Case-insensitive
+        assert!(matches!(
+            SubmissionParser::parse("MODIFY"),
+            Submission::ModifyApproval
+        ));
+        assert!(matches!(
+            SubmissionParser::parse("Edit"),
+            Submission::ModifyApproval
+        ));
+
+        // Non-exact matches remain UserInput
+        assert!(matches!(
+            SubmissionParser::parse("modify please"),
+            Submission::UserInput { .. }
         ));
     }
 

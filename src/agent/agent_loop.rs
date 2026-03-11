@@ -883,11 +883,16 @@ impl Agent {
                     Some(request_id),
                     approved,
                     always,
+                    false,
                 )
                 .await
             }
             Submission::ApprovalResponse { approved, always } => {
-                self.process_approval(message, session, thread_id, None, approved, always)
+                self.process_approval(message, session, thread_id, None, approved, always, false)
+                    .await
+            }
+            Submission::ModifyApproval => {
+                self.process_approval(message, session, thread_id, None, false, false, true)
                     .await
             }
         };

@@ -669,6 +669,7 @@ impl Agent {
     }
 
     /// Process an approval or rejection of a pending tool execution.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn process_approval(
         &self,
         message: &IncomingMessage,
@@ -677,6 +678,7 @@ impl Agent {
         request_id: Option<Uuid>,
         approved: bool,
         always: bool,
+        modify: bool,
     ) -> Result<SubmissionResult, Error> {
         // Get pending approval for this thread
         let pending = {
@@ -1223,6 +1225,41 @@ impl Agent {
                     Ok(SubmissionResult::error(e.to_string()))
                 }
             }
+        } else if modify {
+            // Modification requested — deny execution but guide the LLM to
+            // ask the user what to change and re-submit with updated params.
+            let modification_prompt = format!(
+                "Tool '{}' parameters need modification. The user wants to adjust \
+                 some parameters before execution.\n\n\
+                 Ask the user what they\'d like to change. Once they specify the \
+                 changes, use the `modify_draft` tool to update the parameters \
+                 and re-submit the tool call.",
+                pending.tool_name
+            );
+            {
+                let mut sess = session.lock().await;
+                if let Some(thread) = sess.threads.get_mut(&thread_id) {
+                    thread.clear_pending_approval();
+                    thread.complete_turn(&modification_prompt);
+                    self.persist_assistant_response(
+                        thread_id,
+                        &message.user_id,
+                        &modification_prompt,
+                    )
+                    .await;
+                }
+            }
+
+            let _ = self
+                .channels
+                .send_status(
+                    &message.channel,
+                    StatusUpdate::Status("Modification requested".into()),
+                    &message.metadata,
+                )
+                .await;
+
+            Ok(SubmissionResult::response(modification_prompt))
         } else {
             // Rejected - complete the turn with a rejection message and persist
             let rejection = format!(
