@@ -1493,10 +1493,21 @@ impl Agent {
                         .last()
                         .map(|t| (t.turn_number, t.tool_calls.clone()))
                         .unwrap_or_default();
-                    self.persist_tool_calls(thread_id, &message.user_id, turn_number, &tool_calls)
-                        .await;
-                    self.persist_assistant_response(thread_id, &message.user_id, &response)
-                        .await;
+                    self.persist_tool_calls(
+                        thread_id,
+                        &message.channel,
+                        &message.user_id,
+                        turn_number,
+                        &tool_calls,
+                    )
+                    .await;
+                    self.persist_assistant_response(
+                        thread_id,
+                        &message.channel,
+                        &message.user_id,
+                        &response,
+                    )
+                    .await;
                     Ok(SubmissionResult::response(response))
                 }
                 Ok(AgenticLoopResult::NeedApproval {
