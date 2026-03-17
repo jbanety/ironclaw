@@ -449,6 +449,33 @@ pub struct ActivateResult {
     pub message: String,
 }
 
+/// Result of configuring secrets for an extension.
+///
+/// Returned by `ExtensionManager::configure()`, the single entrypoint
+/// for providing secrets to any extension (chat auth, gateway setup, etc.).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerificationChallenge {
+    /// One-time code the user must send back to the integration.
+    pub code: String,
+    /// Human-readable instructions for completing verification.
+    pub instructions: String,
+    /// Deep-link or shortcut URL that prefills the verification payload when supported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deep_link: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigureResult {
+    /// Human-readable status message.
+    pub message: String,
+    /// Whether the extension was successfully activated after configuration.
+    pub activated: bool,
+    /// OAuth authorization URL (if OAuth flow was started).
+    pub auth_url: Option<String>,
+    /// Pending manual verification challenge (for Telegram owner binding, etc.).
+    pub verification: Option<VerificationChallenge>,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -503,6 +530,9 @@ pub enum ExtensionError {
     #[error("Authentication failed: {0}")]
     AuthFailed(String),
 
+    #[error("Server does not support OAuth: {0}")]
+    AuthNotSupported(String),
+
     #[error("Activation failed: {0}")]
     ActivationFailed(String),
 
@@ -529,6 +559,9 @@ pub enum ExtensionError {
         primary: Box<ExtensionError>,
         fallback: Box<ExtensionError>,
     },
+
+    #[error("Token validation failed: {0}")]
+    ValidationFailed(String),
 
     #[error("{0}")]
     Other(String),

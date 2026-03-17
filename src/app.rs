@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use crate::agent::SessionManager as AgentSessionManager;
 use crate::channels::web::log_layer::LogBroadcaster;
 use crate::config::Config;
 use crate::context::ContextManager;
@@ -46,6 +47,8 @@ pub struct AppComponents {
     pub log_broadcaster: Arc<LogBroadcaster>,
     pub context_manager: Arc<ContextManager>,
     pub hooks: Arc<HookRegistry>,
+    /// Shared thread/session manager used by the standard agent runtime.
+    pub agent_session_manager: Arc<AgentSessionManager>,
     pub skill_registry: Option<Arc<std::sync::RwLock<SkillRegistry>>>,
     pub skill_catalog: Option<Arc<SkillCatalog>>,
     pub cost_guard: Arc<crate::agent::cost_guard::CostGuard>,
@@ -137,12 +140,14 @@ impl AppBuilder {
         self.handles = Some(handles);
 
         // Post-init: migrate disk config, reload config from DB, attach session, cleanup
-        if let Err(e) = crate::bootstrap::migrate_disk_to_db(db.as_ref(), "default").await {
+        if let Err(e) =
+            crate::bootstrap::migrate_disk_to_db(db.as_ref(), &self.config.owner_id).await
+        {
             tracing::warn!("Disk-to-DB settings migration failed: {}", e);
         }
 
         let toml_path = self.toml_path.as_deref();
-        match Config::from_db_with_toml(db.as_ref(), "default", toml_path).await {
+        match Config::from_db_with_toml(db.as_ref(), &self.config.owner_id, toml_path).await {
             Ok(db_config) => {
                 self.config = db_config;
                 tracing::debug!("Configuration reloaded from database");
@@ -155,7 +160,9 @@ impl AppBuilder {
             }
         }
 
-        self.session.attach_store(db.clone(), "default").await;
+        self.session
+            .attach_store(db.clone(), &self.config.owner_id)
+            .await;
 
         // Fire-and-forget housekeeping — no need to block startup.
         let db_cleanup = db.clone();
@@ -190,9 +197,10 @@ impl AppBuilder {
                 let store: Option<&(dyn crate::db::SettingsStore + Sync)> =
                     self.db.as_ref().map(|db| db.as_ref() as _);
                 let toml_path = self.toml_path.as_deref();
+                let owner_id = self.config.owner_id.clone();
                 if let Err(e) = self
                     .config
-                    .re_resolve_llm(store, "default", toml_path)
+                    .re_resolve_llm(store, &owner_id, toml_path)
                     .await
                 {
                     tracing::warn!(
@@ -221,15 +229,17 @@ impl AppBuilder {
 
         if let Some(ref secrets) = store {
             // Inject LLM API keys from encrypted storage
-            crate::config::inject_llm_keys_from_secrets(secrets.as_ref(), "default").await;
+            crate::config::inject_llm_keys_from_secrets(secrets.as_ref(), &self.config.owner_id)
+                .await;
 
             // Re-resolve only the LLM config with newly available keys.
             let store: Option<&(dyn crate::db::SettingsStore + Sync)> =
                 self.db.as_ref().map(|db| db.as_ref() as _);
             let toml_path = self.toml_path.as_deref();
+            let owner_id = self.config.owner_id.clone();
             if let Err(e) = self
                 .config
-                .re_resolve_llm(store, "default", toml_path)
+                .re_resolve_llm(store, &owner_id, toml_path)
                 .await
             {
                 tracing::warn!("Failed to re-resolve LLM config after secret injection: {e}");
@@ -287,6 +297,7 @@ impl AppBuilder {
             Arc::new(ToolRegistry::new())
         };
         tools.register_builtin_tools();
+        tools.register_tool_info();
 
         if let Some(ref ss) = self.secrets_store {
             tools.register_secrets_tools(Arc::clone(ss));
@@ -300,7 +311,8 @@ impl AppBuilder {
 
         // Register memory tools if database is available
         let workspace = if let Some(ref db) = self.db {
-            let mut ws = Workspace::new_with_db("default", db.clone());
+            let mut ws = Workspace::new_with_db(&self.config.owner_id, db.clone())
+                .with_search_config(&self.config.search);
             if let Some(ref emb) = embeddings {
                 ws = ws.with_embeddings(emb.clone());
             }
@@ -464,9 +476,10 @@ impl AppBuilder {
             let tools = Arc::clone(tools);
             let mcp_sm = Arc::clone(&mcp_session_manager);
             let pm = Arc::clone(&mcp_process_manager);
+            let owner_id = self.config.owner_id.clone();
             async move {
                 let servers_result = if let Some(ref d) = db {
-                    load_mcp_servers_from_db(d.as_ref(), "default").await
+                    load_mcp_servers_from_db(d.as_ref(), &owner_id).await
                 } else {
                     crate::tools::mcp::config::load_mcp_servers().await
                 };
@@ -486,6 +499,7 @@ impl AppBuilder {
                             let secrets = secrets_store.clone();
                             let tools = Arc::clone(&tools);
                             let pm = Arc::clone(&pm);
+                            let owner_id = owner_id.clone();
 
                             join_set.spawn(async move {
                                 let server_name = server.name.clone();
@@ -495,7 +509,7 @@ impl AppBuilder {
                                     &mcp_sm,
                                     &pm,
                                     secrets,
-                                    "default",
+                                    &owner_id,
                                 )
                                 .await
                                 {
@@ -563,7 +577,19 @@ impl AppBuilder {
                         }
                     }
                     Err(e) => {
-                        tracing::debug!("No MCP servers configured ({})", e);
+                        if matches!(
+                            e,
+                            crate::tools::mcp::config::ConfigError::InvalidConfig { .. }
+                                | crate::tools::mcp::config::ConfigError::Json(_)
+                        ) {
+                            tracing::warn!(
+                                "MCP server configuration is invalid: {}. \
+                                 Fix or remove the corrupted config.",
+                                e
+                            );
+                        } else {
+                            tracing::debug!("No MCP servers configured ({})", e);
+                        }
                     }
                 }
             }
@@ -577,7 +603,7 @@ impl AppBuilder {
                 let entries: Vec<_> = catalog
                     .all()
                     .iter()
-                    .map(|m| m.to_registry_entry())
+                    .filter_map(|m| m.to_registry_entry())
                     .collect();
                 tracing::debug!(
                     count = entries.len(),
@@ -625,7 +651,7 @@ impl AppBuilder {
                 self.config.wasm.tools_dir.clone(),
                 self.config.channels.wasm_channels_dir.clone(),
                 self.config.tunnel.public_url.clone(),
-                "default".to_string(),
+                self.config.owner_id.clone(),
                 self.db.clone(),
                 catalog_entries.clone(),
             ));
@@ -677,6 +703,8 @@ impl AppBuilder {
 
         // Create hook registry early so runtime extension activation can register hooks.
         let hooks = Arc::new(HookRegistry::new());
+        let agent_session_manager =
+            Arc::new(AgentSessionManager::new().with_hooks(Arc::clone(&hooks)));
 
         let (
             mcp_session_manager,
@@ -783,6 +811,7 @@ impl AppBuilder {
             log_broadcaster: self.log_broadcaster,
             context_manager,
             hooks,
+            agent_session_manager,
             skill_registry,
             skill_catalog,
             cost_guard,
@@ -791,5 +820,71 @@ impl AppBuilder {
             catalog_entries,
             dev_loaded_tool_names,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use tokio::sync::mpsc;
+
+    use crate::agent::SessionManager as AgentSessionManager;
+    use crate::hooks::{
+        Hook, HookContext, HookError, HookEvent, HookOutcome, HookPoint, HookRegistry,
+    };
+
+    struct SessionStartHook {
+        tx: mpsc::UnboundedSender<(String, String)>,
+    }
+
+    #[async_trait]
+    impl Hook for SessionStartHook {
+        fn name(&self) -> &str {
+            "session-start-test"
+        }
+
+        fn hook_points(&self) -> &[HookPoint] {
+            &[HookPoint::OnSessionStart]
+        }
+
+        async fn execute(
+            &self,
+            event: &HookEvent,
+            _ctx: &HookContext,
+        ) -> Result<HookOutcome, HookError> {
+            if let HookEvent::SessionStart {
+                user_id,
+                session_id,
+            } = event
+            {
+                self.tx
+                    .send((user_id.clone(), session_id.clone()))
+                    .expect("test channel receiver should be alive");
+            } else {
+                panic!("SessionStartHook received an unexpected event: {event:?}");
+            }
+            Ok(HookOutcome::ok())
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_session_manager_runs_session_start_hooks() {
+        let hooks = Arc::new(HookRegistry::new());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        hooks.register(Arc::new(SessionStartHook { tx })).await;
+
+        let manager = AgentSessionManager::new().with_hooks(Arc::clone(&hooks));
+        manager.get_or_create_session("user-123").await;
+
+        let (user_id, session_id) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+                .await
+                .expect("session start hook should fire")
+                .expect("session start payload should be present");
+
+        assert_eq!(user_id, "user-123");
+        assert!(!session_id.is_empty());
     }
 }

@@ -220,7 +220,7 @@ async fn check_nearai_session() -> CheckResult {
     let session_path = crate::config::llm::default_session_path();
     if !session_path.exists() {
         // Check for API key mode
-        if std::env::var("NEARAI_API_KEY").is_ok() {
+        if crate::config::helpers::env_or_override("NEARAI_API_KEY").is_some() {
             return CheckResult::Pass("API key configured".into());
         }
         return CheckResult::Fail(format!(
@@ -405,7 +405,11 @@ fn check_routines_config() -> CheckResult {
 fn check_gateway_config(settings: &Settings) -> CheckResult {
     // Use the same resolve() path as runtime so invalid env values
     // (e.g. GATEWAY_PORT=abc) are caught here too.
-    match crate::config::ChannelsConfig::resolve(settings) {
+    let owner_id = match crate::config::resolve_owner_id(settings) {
+        Ok(owner_id) => owner_id,
+        Err(e) => return CheckResult::Fail(format!("config error: {e}")),
+    };
+    match crate::config::ChannelsConfig::resolve(settings, &owner_id) {
         Ok(channels) => match channels.gateway {
             Some(gw) => {
                 if gw.auth_token.is_some() {

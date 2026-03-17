@@ -244,6 +244,12 @@ impl GatewayChannel {
         self
     }
 
+    /// Inject a shared routine engine slot used by other HTTP ingress paths.
+    pub fn with_routine_engine_slot(mut self, slot: server::RoutineEngineSlot) -> Self {
+        self.rebuild_state(|s| s.routine_engine = slot);
+        self
+    }
+
     /// Get the auth token (for printing to console on startup).
     pub fn auth_token(&self) -> &str {
         &self.auth_token
@@ -391,6 +397,10 @@ impl Channel for GatewayChannel {
             StatusUpdate::ImageGenerated { data_url, path } => SseEvent::ImageGenerated {
                 data_url,
                 path,
+                thread_id: thread_id.clone(),
+            },
+            StatusUpdate::Suggestions { suggestions } => SseEvent::Suggestions {
+                suggestions,
                 thread_id,
             },
         };

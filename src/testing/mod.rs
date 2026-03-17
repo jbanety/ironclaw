@@ -439,6 +439,7 @@ impl TestHarnessBuilder {
         };
 
         let deps = AgentDeps {
+            owner_id: "default".to_string(),
             store: Some(Arc::clone(&db)),
             llm,
             cheap_llm: None,
@@ -641,14 +642,20 @@ mod tests {
         let conv_id = uuid::Uuid::new_v4();
 
         // ensure_conversation should create the row.
-        db.ensure_conversation(conv_id, "web", "carol", None)
-            .await
-            .expect("ensure first");
+        assert!(
+            db.ensure_conversation(conv_id, "web", "carol", None)
+                .await
+                .expect("ensure first"),
+            "first ensure_conversation should create the row"
+        );
 
         // Calling again with the same ID should not error.
-        db.ensure_conversation(conv_id, "web", "carol", None)
-            .await
-            .expect("ensure second (idempotent)");
+        assert!(
+            db.ensure_conversation(conv_id, "web", "carol", None)
+                .await
+                .expect("ensure second (idempotent)"),
+            "second ensure_conversation should touch owned row"
+        );
 
         // Should be able to add messages to it.
         let msg_id = db
@@ -664,6 +671,50 @@ mod tests {
             .expect("list messages");
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "test message");
+    }
+
+    #[cfg(feature = "libsql")]
+    #[tokio::test]
+    async fn test_ensure_conversation_foreign_conflict_does_not_touch_last_activity() {
+        let harness = TestHarnessBuilder::new().build().await;
+        let db = &harness.db;
+
+        let conv_id = db
+            .create_conversation("web", "alice", None)
+            .await
+            .expect("create conversation");
+
+        let before = db
+            .list_conversations_all_channels("alice", 10)
+            .await
+            .expect("list conversations before foreign ensure")
+            .into_iter()
+            .find(|c| c.id == conv_id)
+            .expect("conversation must exist before foreign ensure")
+            .last_activity;
+
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+
+        assert!(
+            !db.ensure_conversation(conv_id, "web", "mallory", None)
+                .await
+                .expect("foreign ensure should not error"),
+            "foreign ensure_conversation should report not ensured"
+        );
+
+        let after = db
+            .list_conversations_all_channels("alice", 10)
+            .await
+            .expect("list conversations after foreign ensure")
+            .into_iter()
+            .find(|c| c.id == conv_id)
+            .expect("conversation must still exist after foreign ensure")
+            .last_activity;
+
+        assert_eq!(
+            after, before,
+            "foreign ensure_conversation should not mutate last_activity"
+        );
     }
 
     #[cfg(feature = "libsql")]
@@ -1017,6 +1068,8 @@ mod tests {
                 prompt: "Check status".to_string(),
                 context_paths: vec![],
                 max_tokens: 500,
+                use_tools: false,
+                max_tool_rounds: 3,
             },
             guardrails: RoutineGuardrails {
                 cooldown: std::time::Duration::from_secs(60),
@@ -1025,7 +1078,7 @@ mod tests {
             },
             notify: NotifyConfig {
                 channel: None,
-                user: "user1".to_string(),
+                user: Some("user1".to_string()),
                 on_attention: true,
                 on_failure: true,
                 on_success: false,
@@ -1148,6 +1201,8 @@ mod tests {
                 prompt: "test".to_string(),
                 context_paths: vec![],
                 max_tokens: 100,
+                use_tools: false,
+                max_tool_rounds: 3,
             },
             guardrails: RoutineGuardrails {
                 cooldown: std::time::Duration::from_secs(0),
@@ -1156,7 +1211,7 @@ mod tests {
             },
             notify: NotifyConfig {
                 channel: None,
-                user: "user1".to_string(),
+                user: Some("user1".to_string()),
                 on_attention: false,
                 on_failure: false,
                 on_success: false,
