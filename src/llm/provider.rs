@@ -455,6 +455,35 @@ pub fn sanitize_tool_messages(messages: &mut [ChatMessage]) {
     }
 }
 
+// @FORK: sanitize_trailing_assistant_message — Anthropic rejects trailing
+// assistant role; append synthetic user "Continue." to keep conversation
+// valid. Fixes 400 Bad Request on "direct selection fallback" path.
+// (linoasclaw fork — see https://github.com/jbanety/ironclaw branch linoasclaw)
+/// Sanitize trailing assistant messages before sending to the LLM.
+///
+/// Anthropic (and some other providers) reject requests where the last message
+/// has role `assistant` — this is called "assistant message prefill" and is
+/// not supported by the standard Chat Completions API.
+///
+/// When IronClaw's agentic loop appends a plan summary or intermediate
+/// response as an assistant message and then retries (e.g. "direct selection
+/// fallback"), the trailing assistant message causes a 400 Bad Request.
+///
+/// Fix: if the last message is `assistant`, append a synthetic `user` message
+/// so the conversation ends on a valid role.
+pub fn sanitize_trailing_assistant_message(messages: &mut Vec<ChatMessage>) {
+    if messages
+        .last()
+        .map(|m| m.role == Role::Assistant)
+        .unwrap_or(false)
+    {
+        tracing::debug!(
+            "Appending synthetic user message — provider rejects trailing assistant message"
+        );
+        messages.push(ChatMessage::user("Continue."));
+    }
+}
+
 /// Represents a request parameter that may not be supported by all LLM providers.
 ///
 /// This typed enum replaces stringly-typed parameter names across the codebase,
@@ -651,4 +680,61 @@ mod tests {
         assert!(messages[2].tool_call_id.is_none());
         assert!(messages[2].name.is_none());
     }
+
+    // BEGIN @FORK -- sanitize_trailing_assistant_message ---------------------------------
+
+    #[test]
+    fn trailing_assistant_gets_continue_appended() {
+        let mut messages = vec![
+            ChatMessage::system("You are Linoa."),
+            ChatMessage::user("Do the thing."),
+            ChatMessage::assistant("I've created a plan: ..."),
+        ];
+        sanitize_trailing_assistant_message(&mut messages);
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[3].role, Role::User);
+        assert_eq!(messages[3].content, "Continue.");
+    }
+
+    #[test]
+    fn trailing_user_is_not_modified() {
+        let mut messages = vec![
+            ChatMessage::system("You are Linoa."),
+            ChatMessage::user("Hello"),
+        ];
+        sanitize_trailing_assistant_message(&mut messages);
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn trailing_tool_result_is_not_modified() {
+        let mut messages = vec![
+            ChatMessage::assistant_with_tool_calls(None, vec![]),
+            ChatMessage::tool_result("tc_1", "my_tool", "ok"),
+        ];
+        sanitize_trailing_assistant_message(&mut messages);
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn empty_messages_not_modified_by_trailing_sanitize() {
+        let mut messages: Vec<ChatMessage> = vec![];
+        sanitize_trailing_assistant_message(&mut messages);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn assistant_with_tool_calls_trailing_gets_continue_appended() {
+        // assistant_with_tool_calls is also role=Assistant -- must be sanitized too
+        let mut messages = vec![
+            ChatMessage::user("Do stuff"),
+            ChatMessage::assistant_with_tool_calls(Some("thinking...".into()), vec![]),
+        ];
+        sanitize_trailing_assistant_message(&mut messages);
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2].role, Role::User);
+        assert_eq!(messages[2].content, "Continue.");
+    }
+
+    // END @FORK
 }

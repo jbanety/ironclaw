@@ -581,6 +581,9 @@ where
 
         let mut messages = request.messages;
         crate::llm::provider::sanitize_tool_messages(&mut messages);
+        // BEGIN @FORK: guard against trailing assistant message
+        crate::llm::provider::sanitize_trailing_assistant_message(&mut messages);
+        // END @FORK
         let (preamble, history) = convert_messages(&messages);
 
         let rig_req = build_rig_request(
@@ -647,6 +650,9 @@ where
 
         let mut messages = request.messages;
         crate::llm::provider::sanitize_tool_messages(&mut messages);
+        // BEGIN @FORK: guard against trailing assistant message (linoasclaw fork)
+        crate::llm::provider::sanitize_trailing_assistant_message(&mut messages);
+        // END @FORK
         let (preamble, history) = convert_messages(&messages);
         let tools = convert_tools(&request.tools);
         let tool_choice = convert_tool_choice(request.tool_choice.as_deref());
