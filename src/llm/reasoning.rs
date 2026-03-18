@@ -757,6 +757,7 @@ Respond in JSON format:
             context
                 .available_tools
                 .iter()
+                // BEGIN @FORK linoasclaw — inject required param hints into planning prompt
                 .map(|t| {
                     // Extract required params + their type/enum hints from the JSON schema.
                     // This is the only place the LLM sees tool signatures during planning
@@ -814,6 +815,7 @@ Respond in JSON format:
                         )
                     }
                 })
+                // END @FORK linoasclaw
                 .collect::<Vec<_>>()
                 .join("\n")
         };
