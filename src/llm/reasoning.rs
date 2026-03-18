@@ -757,7 +757,63 @@ Respond in JSON format:
             context
                 .available_tools
                 .iter()
-                .map(|t| format!("- {}: {}", t.name, t.description))
+                .map(|t| {
+                    // Extract required params + their type/enum hints from the JSON schema.
+                    // This is the only place the LLM sees tool signatures during planning
+                    // (planning runs with tools=0, no function definitions sent).
+                    let schema = &t.parameters;
+                    let required: Vec<String> = schema
+                        .get("required")
+                        .and_then(|r| r.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(|param| {
+                                    // Try to extract enum values or type from properties
+                                    let hint = schema
+                                        .get("properties")
+                                        .and_then(|p| p.get(param))
+                                        .map(|prop| {
+                                            if let Some(enum_vals) = prop
+                                                .get("enum")
+                                                .and_then(|e| e.as_array())
+                                            {
+                                                let vals: Vec<&str> = enum_vals
+                                                    .iter()
+                                                    .filter_map(|v| v.as_str())
+                                                    .collect();
+                                                if !vals.is_empty() {
+                                                    return format!(
+                                                        "{}: enum({})",
+                                                        param,
+                                                        vals.join("|")
+                                                    );
+                                                }
+                                            }
+                                            let type_str = prop
+                                                .get("type")
+                                                .and_then(|t| t.as_str())
+                                                .unwrap_or("any");
+                                            format!("{}: {}", param, type_str)
+                                        })
+                                        .unwrap_or_else(|| param.to_string());
+                                    hint
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    if required.is_empty() {
+                        format!("- {}: {}", t.name, t.description)
+                    } else {
+                        format!(
+                            "- {}: {} [required: {}]",
+                            t.name,
+                            t.description,
+                            required.join(", ")
+                        )
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         };
