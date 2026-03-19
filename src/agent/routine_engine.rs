@@ -784,8 +784,27 @@ async fn execute_lightweight(
         Err(_) => None,
     };
 
+    // BEGIN @FORK linoa: inject routine context header
+    // Injects [ROUTINE type=X name=Y] at the top of the user prompt so the
+    // LLM can adapt its intro tone based on the routine type:
+    //   "watchdog"         → system surveillance (seed-routines)
+    //   "reminder_trigger" → user-created reminder
+    //   "action_trigger"   → user-created scheduled action
+    //   "user"             → user-created custom routine (no type set)
+    let routine_type = routine
+        .state
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("user");
+    // END @FORK
+
     // Build the user-facing prompt
-    let mut full_prompt = String::new();
+    // BEGIN @FORK linoa: prepend routine context header to prompt
+    let mut full_prompt = format!(
+        "[ROUTINE type={} name={}]\n\n",
+        routine_type, routine.name
+    );
+    // END @FORK
     full_prompt.push_str(prompt);
 
     if !context_parts.is_empty() {
