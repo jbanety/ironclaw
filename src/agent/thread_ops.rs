@@ -859,7 +859,9 @@ impl Agent {
     }
 
     /// Process an approval or rejection of a pending tool execution.
+    // BEGIN @FORK linoasclaw: add `modify` param + allow clippy for extra arg
     #[allow(clippy::too_many_arguments)]
+    // END @FORK
     pub(super) async fn process_approval(
         &self,
         message: &IncomingMessage,
@@ -868,7 +870,9 @@ impl Agent {
         request_id: Option<Uuid>,
         approved: bool,
         always: bool,
+        // BEGIN @FORK linoasclaw: add `modify` as first-class approval response
         modify: bool,
+        // END @FORK
     ) -> Result<SubmissionResult, Error> {
         // Get pending approval for this thread
         let pending = {
@@ -1452,6 +1456,7 @@ impl Agent {
                     Ok(SubmissionResult::error(e.to_string()))
                 }
             }
+        // BEGIN @FORK linoasclaw: modify continues agentic loop instead of displaying raw prompt
         } else if modify {
             // Modification requested — inject a tool_result telling the LLM
             // that the user wants to change parameters, then continue the
@@ -1529,12 +1534,14 @@ impl Agent {
                     let tool_name = new_pending.tool_name.clone();
                     let description = new_pending.description.clone();
                     let parameters = new_pending.display_parameters.clone();
-                    thread.await_approval(new_pending);
+                    let allow_always = new_pending.allow_always;
+                    thread.await_approval(*new_pending);
                     Ok(SubmissionResult::NeedApproval {
                         request_id,
                         tool_name,
                         description,
                         parameters,
+                        allow_always,
                     })
                 }
                 Err(e) => {
@@ -1542,6 +1549,7 @@ impl Agent {
                     Ok(SubmissionResult::error(e.to_string()))
                 }
             }
+        // END @FORK linoasclaw
         } else {
             // Rejected - complete the turn with a rejection message and persist
             let rejection = format!(
