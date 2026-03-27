@@ -189,17 +189,24 @@ impl SessionManager {
     /// Register a hydrated thread so subsequent `resolve_thread` calls find it.
     ///
     /// Inserts into the thread_map and creates an undo manager for the thread.
+    /// `external_thread_id` is the key used by `resolve_thread` (e.g. the Telegram
+    /// numeric chat_id).  When `None`, defaults to `thread_id.to_string()`.
     pub async fn register_thread(
         &self,
         user_id: &str,
         channel: &str,
         thread_id: Uuid,
         session: Arc<Mutex<Session>>,
+        external_thread_id: Option<&str>,
     ) {
         let key = ThreadKey {
             user_id: user_id.to_string(),
             channel: channel.to_string(),
-            external_thread_id: Some(thread_id.to_string()),
+            external_thread_id: Some(
+                external_thread_id
+                    .unwrap_or(&thread_id.to_string())
+                    .to_string(),
+            ),
         };
 
         {
@@ -450,7 +457,7 @@ mod tests {
 
         // Register the thread
         manager
-            .register_thread("user-hydrate", "gateway", thread_id, Arc::clone(&session))
+            .register_thread("user-hydrate", "gateway", thread_id, Arc::clone(&session), None)
             .await;
 
         // resolve_thread should find it (using the UUID as external_thread_id)
@@ -573,7 +580,7 @@ mod tests {
 
         // Register it
         manager
-            .register_thread("user-web", "gateway", known_uuid, Arc::clone(&session))
+            .register_thread("user-web", "gateway", known_uuid, Arc::clone(&session), None)
             .await;
 
         // resolve_thread with UUID as external_thread_id MUST return the same UUID,
@@ -600,10 +607,10 @@ mod tests {
 
         // Register twice
         manager
-            .register_thread("user-idem", "gateway", tid, Arc::clone(&session))
+            .register_thread("user-idem", "gateway", tid, Arc::clone(&session), None)
             .await;
         manager
-            .register_thread("user-idem", "gateway", tid, Arc::clone(&session))
+            .register_thread("user-idem", "gateway", tid, Arc::clone(&session), None)
             .await;
 
         // Should still resolve to the same thread
@@ -628,7 +635,7 @@ mod tests {
         }
 
         manager
-            .register_thread("user-undo", "gateway", tid, Arc::clone(&session))
+            .register_thread("user-undo", "gateway", tid, Arc::clone(&session), None)
             .await;
 
         // Undo manager should exist for the registered thread
@@ -658,7 +665,7 @@ mod tests {
         }
 
         manager
-            .register_thread("user-new", "gateway", tid, Arc::clone(&session))
+            .register_thread("user-new", "gateway", tid, Arc::clone(&session), None)
             .await;
 
         // Now the session should be tracked
@@ -761,7 +768,7 @@ mod tests {
 
         // Register on "gateway" channel
         manager
-            .register_thread("user-cross", "gateway", tid, Arc::clone(&session))
+            .register_thread("user-cross", "gateway", tid, Arc::clone(&session), None)
             .await;
 
         // Resolve on a different channel with the same UUID string should NOT

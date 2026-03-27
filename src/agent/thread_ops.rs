@@ -46,56 +46,41 @@ impl Agent {
         message: &IncomingMessage,
         external_thread_id: &str,
     ) -> Option<String> {
-        // Only hydrate UUID-shaped thread IDs (web gateway uses UUIDs)
-        let thread_uuid = match Uuid::parse_str(external_thread_id) {
-            Ok(id) => id,
-            Err(_) => return None,
-        };
+        // UUID thread IDs: hydrate the exact thread from DB (web gateway path).
+        // Non-UUID thread IDs (e.g. Telegram numeric chat_id): fall through to the
+        // channel assistant_conversation path below so routine notification context
+        // is available when the user replies.
+        let thread_uuid = Uuid::parse_str(external_thread_id);
 
-        // Check if already in memory
-        let session = self
-            .session_manager
-            .get_or_create_session(&message.user_id)
-            .await;
-        {
-            let sess = session.lock().await;
-            if sess.threads.contains_key(&thread_uuid) {
-                return None;
-            }
-        }
-
-        // Load history from DB (may be empty for a newly created thread).
-        let mut chat_messages: Vec<ChatMessage> = Vec::new();
-        let msg_count;
-
-        if let Some(store) = self.store() {
-            // Never hydrate history from a conversation UUID that isn't owned
-            // by the current authenticated user.
-            let owned = match store
-                .conversation_belongs_to_user(thread_uuid, &message.user_id)
-                .await
+        if let Ok(uuid) = thread_uuid {
+            // Check if already in memory
+            let session = self
+                .session_manager
+                .get_or_create_session(&message.user_id)
+                .await;
             {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to verify conversation ownership for hydration {}: {}",
-                        thread_uuid,
-                        e
-                    );
-                    if requires_preexisting_uuid_thread(&message.channel) {
-                        return Some(FORGED_THREAD_ID_ERROR.to_string());
-                    }
+                let sess = session.lock().await;
+                if sess.threads.contains_key(&uuid) {
                     return None;
                 }
-            };
-            if !owned {
-                let exists = match store.get_conversation_metadata(thread_uuid).await {
-                    Ok(Some(_)) => true,
-                    Ok(None) => false,
+            }
+
+            // Load history from DB (may be empty for a newly created thread).
+            let mut chat_messages: Vec<ChatMessage> = Vec::new();
+            let msg_count;
+
+            if let Some(store) = self.store() {
+                // Never hydrate history from a conversation UUID that isn't owned
+                // by the current authenticated user.
+                let owned = match store
+                    .conversation_belongs_to_user(uuid, &message.user_id)
+                    .await
+                {
+                    Ok(v) => v,
                     Err(e) => {
                         tracing::warn!(
-                            "Failed to inspect conversation metadata for hydration {}: {}",
-                            thread_uuid,
+                            "Failed to verify conversation ownership for hydration {}: {}",
+                            uuid,
                             e
                         );
                         if requires_preexisting_uuid_thread(&message.channel) {
@@ -104,53 +89,146 @@ impl Agent {
                         return None;
                     }
                 };
+                if !owned {
+                    let exists = match store.get_conversation_metadata(uuid).await {
+                        Ok(Some(_)) => true,
+                        Ok(None) => false,
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to inspect conversation metadata for hydration {}: {}",
+                                uuid,
+                                e
+                            );
+                            if requires_preexisting_uuid_thread(&message.channel) {
+                                return Some(FORGED_THREAD_ID_ERROR.to_string());
+                            }
+                            return None;
+                        }
+                    };
 
-                if requires_preexisting_uuid_thread(&message.channel) {
-                    tracing::warn!(
-                        user = %message.user_id,
-                        channel = %message.channel,
-                        thread_id = %thread_uuid,
-                        exists,
-                        "Rejected message for unavailable thread id"
-                    );
-                    return Some(FORGED_THREAD_ID_ERROR.to_string());
+                    if requires_preexisting_uuid_thread(&message.channel) {
+                        tracing::warn!(
+                            user = %message.user_id,
+                            channel = %message.channel,
+                            thread_id = %uuid,
+                            exists,
+                            "Skipped hydration for thread id not owned by sender"
+                        );
+                        return None;
+                    }
+
+                    return None;
                 }
 
+                let db_messages = store
+                    .list_conversation_messages(uuid)
+                    .await
+                    .unwrap_or_default();
+                msg_count = db_messages.len();
+                chat_messages = rebuild_chat_messages_from_db(&db_messages);
+            } else {
+                msg_count = 0;
+            }
+
+            // Create thread with the historical ID and restore messages
+            let session_id = {
+                let sess = session.lock().await;
+                sess.id
+            };
+
+            let mut thread = crate::agent::session::Thread::with_id(uuid, session_id);
+            if !chat_messages.is_empty() {
+                thread.restore_from_messages(chat_messages);
+            }
+
+            // Insert into session and register with session manager
+            {
+                let mut sess = session.lock().await;
+                sess.threads.insert(uuid, thread);
+                sess.active_thread = Some(uuid);
+                sess.last_active_at = chrono::Utc::now();
+            }
+
+            self.session_manager
+                .register_thread(
+                    &message.user_id,
+                    &message.channel,
+                    uuid,
+                    Arc::clone(&session),
+                    None,
+                )
+                .await;
+
+            tracing::debug!(
+                "Hydrated thread {} from DB ({} messages)",
+                uuid,
+                msg_count
+            );
+
+            return None;
+        }
+
+        // Non-UUID thread_id (e.g. Telegram numeric chat_id): load recent messages
+        // from the user's assistant_conversation for this channel. This makes routine
+        // notification summaries (mirrored there by routine_engine) visible as context
+        // when the user replies after a watchdog fires.
+        let Some(store) = self.store() else {
+            return None;
+        };
+
+        let ch_conv_id = match store
+            .get_or_create_assistant_conversation(&message.user_id, &message.channel)
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => {
                 tracing::warn!(
                     user = %message.user_id,
-                    thread_id = %thread_uuid,
-                    exists,
-                    "Skipped hydration for thread id not owned by sender"
+                    channel = %message.channel,
+                    "Failed to load channel assistant conversation for hydration: {}", e
                 );
                 return None;
             }
+        };
 
-            let db_messages = store
-                .list_conversation_messages(thread_uuid)
-                .await
-                .unwrap_or_default();
-            msg_count = db_messages.len();
-            chat_messages = rebuild_chat_messages_from_db(&db_messages);
-        } else {
-            msg_count = 0;
+        let db_messages = store
+            .list_conversation_messages(ch_conv_id)
+            .await
+            .unwrap_or_default();
+
+        if db_messages.is_empty() {
+            return None;
         }
 
-        // Create thread with the historical ID and restore messages
+        let chat_messages = rebuild_chat_messages_from_db(&db_messages);
+
+        // Inject into a new thread keyed on this channel conversation UUID so the
+        // session manager can reuse it on subsequent messages within the same session.
+        let session = self
+            .session_manager
+            .get_or_create_session(&message.user_id)
+            .await;
+
         let session_id = {
             let sess = session.lock().await;
             sess.id
         };
 
-        let mut thread = crate::agent::session::Thread::with_id(thread_uuid, session_id);
-        if !chat_messages.is_empty() {
-            thread.restore_from_messages(chat_messages);
+        // If the channel conversation thread is already in memory, nothing to do.
+        {
+            let sess = session.lock().await;
+            if sess.threads.contains_key(&ch_conv_id) {
+                return None;
+            }
         }
 
-        // Insert into session and register with session manager
+        let mut thread = crate::agent::session::Thread::with_id(ch_conv_id, session_id);
+        thread.restore_from_messages(chat_messages);
+
         {
             let mut sess = session.lock().await;
-            sess.threads.insert(thread_uuid, thread);
-            sess.active_thread = Some(thread_uuid);
+            sess.threads.insert(ch_conv_id, thread);
+            sess.active_thread = Some(ch_conv_id);
             sess.last_active_at = chrono::Utc::now();
         }
 
@@ -158,15 +236,18 @@ impl Agent {
             .register_thread(
                 &message.user_id,
                 &message.channel,
-                thread_uuid,
+                ch_conv_id,
                 Arc::clone(&session),
+                Some(external_thread_id),
             )
             .await;
 
         tracing::debug!(
-            "Hydrated thread {} from DB ({} messages)",
-            thread_uuid,
-            msg_count
+            user = %message.user_id,
+            channel = %message.channel,
+            conversation = %ch_conv_id,
+            msg_count = db_messages.len(),
+            "Hydrated channel assistant conversation for non-UUID thread"
         );
 
         None
