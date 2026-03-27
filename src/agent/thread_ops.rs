@@ -168,6 +168,7 @@ impl Agent {
             return None;
         }
 
+        // BEGIN @FORK linoasclaw: hydrate non-UUID threads from channel assistant_conversation
         // Non-UUID thread_id (e.g. Telegram numeric chat_id): load recent messages
         // from the user's assistant_conversation for this channel. This makes routine
         // notification summaries (mirrored there by routine_engine) visible as context
@@ -251,6 +252,7 @@ impl Agent {
         );
 
         None
+        // END @FORK
     }
 
     pub(super) async fn process_user_input(

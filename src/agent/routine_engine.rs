@@ -601,6 +601,7 @@ impl RoutineEngine {
             }
         };
 
+        // BEGIN @FORK linoasclaw: mirror routine result to channel assistant_conversation
         // Mirror into the user's assistant conversation for the notify channel
         if let Some(notify_channel) = routine.notify.channel.as_deref() {
             match self
@@ -629,6 +630,7 @@ impl RoutineEngine {
                 }
             }
         }
+        // END @FORK
 
         // Send notification
         send_notification(
@@ -1020,6 +1022,7 @@ async fn execute_routine(ctx: EngineContext, routine: Routine, run: RoutineRun) 
         }
     };
 
+    // BEGIN @FORK linoasclaw: mirror routine result to channel assistant_conversation
     // Mirror the notification into the user's assistant conversation for the notify
     // channel so that the next incoming message from that channel can load it as
     // context (see maybe_hydrate_thread non-UUID path in thread_ops.rs).
@@ -1054,6 +1057,7 @@ async fn execute_routine(ctx: EngineContext, routine: Routine, run: RoutineRun) 
             }
         }
     }
+    // END @FORK
 
     // Send notifications based on config
     send_notification(

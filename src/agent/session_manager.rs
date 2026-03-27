@@ -197,16 +197,20 @@ impl SessionManager {
         channel: &str,
         thread_id: Uuid,
         session: Arc<Mutex<Session>>,
+        // BEGIN @FORK linoasclaw: allow callers to specify an external key distinct from thread_id
         external_thread_id: Option<&str>,
+        // END @FORK
     ) {
         let key = ThreadKey {
             user_id: user_id.to_string(),
             channel: channel.to_string(),
+            // BEGIN @FORK linoasclaw: use caller-supplied external key or default to thread_id
             external_thread_id: Some(
                 external_thread_id
                     .unwrap_or(&thread_id.to_string())
                     .to_string(),
             ),
+            // END @FORK
         };
 
         {
