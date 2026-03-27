@@ -602,34 +602,8 @@ impl RoutineEngine {
         };
 
         // BEGIN @FORK linoasclaw: mirror routine result to channel assistant_conversation
-        // Mirror into the user's assistant conversation for the notify channel
-        if let Some(notify_channel) = routine.notify.channel.as_deref() {
-            match self
-                .store
-                .get_or_create_assistant_conversation(&routine.user_id, notify_channel)
-                .await
-            {
-                Ok(ch_conv_id) => {
-                    let mirror_msg = format!("[routine:{}] {}: {}", routine.name, status, summary);
-                    if let Err(e) = self
-                        .store
-                        .add_conversation_message(ch_conv_id, "assistant", &mirror_msg)
-                        .await
-                    {
-                        tracing::warn!(
-                            routine = %routine.name,
-                            "Failed to mirror dispatched result to channel conversation: {}", e
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        routine = %routine.name,
-                        "Failed to get channel conversation for mirror: {}", e
-                    );
-                }
-            }
-        }
+        // NOTE: mirror is now done in agent_loop.rs after the notification is dispatched
+        // to the resolved user — this ensures the correct user_id is used.
         // END @FORK
 
         // Send notification
@@ -1023,40 +997,8 @@ async fn execute_routine(ctx: EngineContext, routine: Routine, run: RoutineRun) 
     };
 
     // BEGIN @FORK linoasclaw: mirror routine result to channel assistant_conversation
-    // Mirror the notification into the user's assistant conversation for the notify
-    // channel so that the next incoming message from that channel can load it as
-    // context (see maybe_hydrate_thread non-UUID path in thread_ops.rs).
-    if let (Some(notify_channel), Some(summary_text)) =
-        (routine.notify.channel.as_deref(), &summary)
-    {
-        match ctx
-            .store
-            .get_or_create_assistant_conversation(&routine.user_id, notify_channel)
-            .await
-        {
-            Ok(ch_conv_id) => {
-                let mirror_msg = format!("[routine:{}] {}", routine.name, summary_text);
-                if let Err(e) = ctx
-                    .store
-                    .add_conversation_message(ch_conv_id, "assistant", &mirror_msg)
-                    .await
-                {
-                    tracing::warn!(
-                        routine = %routine.name,
-                        channel = %notify_channel,
-                        "Failed to mirror routine result to channel conversation: {}", e
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    routine = %routine.name,
-                    channel = %notify_channel,
-                    "Failed to get channel conversation for routine mirror: {}", e
-                );
-            }
-        }
-    }
+    // NOTE: mirror is now done in agent_loop.rs after the notification is dispatched
+    // to the resolved user — this ensures the correct user_id is used.
     // END @FORK
 
     // Send notifications based on config

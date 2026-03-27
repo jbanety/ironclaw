@@ -569,6 +569,9 @@ impl Agent {
                     // Spawn notification forwarder (mirrors heartbeat pattern)
                     let channels = self.channels.clone();
                     let extension_manager = self.deps.extension_manager.clone();
+                    // BEGIN @FORK linoasclaw: capture store to mirror notifications into assistant_conversation
+                    let notify_store = Arc::clone(store);
+                    // END @FORK
                     tokio::spawn(async move {
                         while let Some(response) = notify_rx.recv().await {
                             let notify_channel = response
@@ -600,7 +603,50 @@ impl Agent {
                             // broadcasting on all channels.
                             let targeted_ok = if let Some(ref channel) = notify_channel {
                                 match channels.broadcast(channel, &user, response.clone()).await {
-                                    Ok(()) => true,
+                                    Ok(()) => {
+                                        // BEGIN @FORK linoasclaw: mirror notification into assistant_conversation
+                                        // so the LLM has context when the user replies on this channel.
+                                        if let Some(routine_name) = response
+                                            .metadata
+                                            .get("routine_name")
+                                            .and_then(|v| v.as_str())
+                                        {
+                                            let mirror_msg = format!(
+                                                "[routine:{}] {}",
+                                                routine_name, response.content
+                                            );
+                                            match notify_store
+                                                .get_or_create_assistant_conversation(
+                                                    &user, channel,
+                                                )
+                                                .await
+                                            {
+                                                Ok(conv_id) => {
+                                                    if let Err(e) = notify_store
+                                                        .add_conversation_message(
+                                                            conv_id,
+                                                            "assistant",
+                                                            &mirror_msg,
+                                                        )
+                                                        .await
+                                                    {
+                                                        tracing::warn!(
+                                                            routine = %routine_name,
+                                                            "Failed to mirror notification to conversation: {}", e
+                                                        );
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    tracing::warn!(
+                                                        routine = %routine_name,
+                                                        "Failed to get conversation for mirror: {}", e
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        // END @FORK
+                                        true
+                                    }
                                     Err(e) => {
                                         let should_fallback =
                                             should_fallback_routine_notification(&e);
