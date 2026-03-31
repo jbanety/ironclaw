@@ -215,13 +215,21 @@ impl Agent {
             sess.id
         };
 
-        // If the channel conversation thread is already in memory, nothing to do.
+        // BEGIN @FORK linoasclaw: reload idle channel threads to pick up watchdog mirrors
+        // If the channel conversation thread is already in memory AND actively
+        // processing, do not disturb it. If it is Idle, reload from DB so that
+        // watchdog notifications mirrored to the assistant_conversation since the
+        // thread was last hydrated are visible when the user replies (e.g. "Oui").
         {
             let sess = session.lock().await;
-            if sess.threads.contains_key(&ch_conv_id) {
-                return None;
+            if let Some(existing) = sess.threads.get(&ch_conv_id) {
+                if existing.state != ThreadState::Idle {
+                    return None;
+                }
+                // Idle: fall through and replace with fresh DB snapshot below.
             }
         }
+        // END @FORK
 
         let mut thread = crate::agent::session::Thread::with_id(ch_conv_id, session_id);
         thread.restore_from_messages(chat_messages);
