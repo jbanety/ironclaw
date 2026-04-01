@@ -882,7 +882,7 @@ impl Agent {
                 sess.threads.entry(id).or_insert(thread);
             }
             self.session_manager
-                .register_thread("default", "gateway", id, session)
+                .register_thread("default", "gateway", id, session, None)
                 .await;
 
             let mut out = OutgoingResponse::text(BOOTSTRAP_GREETING.to_string());
@@ -1192,6 +1192,7 @@ impl Agent {
                         &message.channel,
                         target_thread_id,
                         Arc::clone(&session),
+                        None,
                     )
                     .await;
                 (session, target_thread_id)

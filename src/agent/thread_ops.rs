@@ -159,11 +159,7 @@ impl Agent {
                 )
                 .await;
 
-            tracing::debug!(
-                "Hydrated thread {} from DB ({} messages)",
-                uuid,
-                msg_count
-            );
+            tracing::debug!("Hydrated thread {} from DB ({} messages)", uuid, msg_count);
 
             return None;
         }
@@ -1707,7 +1703,13 @@ impl Agent {
             // Continue the agentic loop — the LLM sees the tool_result and
             // responds to the user (no message is sent directly to the channel).
             let result = self
-                .run_agentic_loop(message, session.clone(), thread_id, context_messages)
+                .run_agentic_loop(
+                    message,
+                    self.tenant_ctx(&message.user_id).await,
+                    session.clone(),
+                    thread_id,
+                    context_messages,
+                )
                 .await;
 
             // Handle loop result — same pattern as the approved-path post-loop.
@@ -1720,10 +1722,10 @@ impl Agent {
             match result {
                 Ok(AgenticLoopResult::Response(response)) => {
                     thread.complete_turn(&response);
-                    let (turn_number, tool_calls) = thread
+                    let (turn_number, tool_calls, narrative) = thread
                         .turns
                         .last()
-                        .map(|t| (t.turn_number, t.tool_calls.clone()))
+                        .map(|t| (t.turn_number, t.tool_calls.clone(), t.narrative.clone()))
                         .unwrap_or_default();
                     self.persist_tool_calls(
                         thread_id,
@@ -1731,6 +1733,7 @@ impl Agent {
                         &message.user_id,
                         turn_number,
                         &tool_calls,
+                        narrative.as_deref(),
                     )
                     .await;
                     self.persist_assistant_response(
