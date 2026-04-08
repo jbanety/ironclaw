@@ -1,3 +1,36 @@
+// BEGIN @FORK linoasclaw: this is a fork branch of the upstream repository https://github.com/nearai/ironclaw.
+
+# IMPORTANT
+This branch must be merged with the latest tags/releases of ironclaw.
+
+If I ask to `update to latest tag` or `faire l'upgrade vers 0.24`, you must check the latest or corresponding tag on the upstream and do conflicts resolution and preserve primary intent of the changes.
+
+All the changes in this branch must be upstream-compatible and wrapped with `// BEGIN @FORK linoasclaw: [intent]` and `// END @FORK`.
+
+Some changes may add logic that upstream had fixed or changed. Please ask the developer for more information about the changes.
+
+Examples: 
+- ```
+  // BEGIN @FORK linoasclaw: capture store to mirror notifications into assistant_conversation
+  let notify_store = Arc::clone(store);
+  // END @FORK
+  ```
+
+- ```
+  pub async fn register_thread(
+    &self,
+    user_id: &str,
+    channel: &str,
+    thread_id: Uuid,
+    session: Arc<Mutex<Session>>,
+    // BEGIN @FORK linoasclaw: allow callers to specify an external key distinct from thread_id
+    external_thread_id: Option<&str>,
+    // END @FORK
+  ) {}
+  ```
+
+// END @FORK
+
 # IronClaw Development Guide
 
 **IronClaw** is a secure personal AI assistant — user-first security, self-expanding tools, defense in depth, multi-channel access with proactive background execution.
