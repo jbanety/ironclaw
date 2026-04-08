@@ -494,7 +494,13 @@ mod tests {
 
         // Register the thread
         manager
-            .register_thread("user-hydrate", "gateway", thread_id, Arc::clone(&session), None)
+            .register_thread(
+                "user-hydrate",
+                "gateway",
+                thread_id,
+                Arc::clone(&session),
+                None,
+            )
             .await;
 
         // resolve_thread should find it (using the UUID as external_thread_id)
@@ -617,7 +623,13 @@ mod tests {
 
         // Register it
         manager
-            .register_thread("user-web", "gateway", known_uuid, Arc::clone(&session), None)
+            .register_thread(
+                "user-web",
+                "gateway",
+                known_uuid,
+                Arc::clone(&session),
+                None,
+            )
             .await;
 
         // resolve_thread with UUID as external_thread_id MUST return the same UUID,
@@ -831,10 +843,10 @@ mod tests {
         }
 
         manager
-            .register_thread("user-cross", "http", tid, Arc::clone(&session))
+            .register_thread("user-cross", "http", tid, Arc::clone(&session), None)
             .await;
         manager
-            .register_thread("user-cross", "gateway", tid, Arc::clone(&session))
+            .register_thread("user-cross", "gateway", tid, Arc::clone(&session), None)
             .await;
 
         let (_, resolved) = manager
