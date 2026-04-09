@@ -40,6 +40,20 @@ use crate::workspace::Workspace;
 /// organically in the subsequent turns driven by BOOTSTRAP.md.
 const BOOTSTRAP_GREETING: &str = include_str!("../workspace/seeds/GREETING.md");
 
+// BEGIN @FORK linoasclaw: allow overriding GREETING.md from workspace at runtime
+/// Read `GREETING.md` from the workspace DB. If found and non-empty, use that
+/// content; otherwise fall back to the compiled-in `BOOTSTRAP_GREETING`.
+async fn resolve_greeting(workspace: Option<&Arc<Workspace>>) -> String {
+    if let Some(ws) = workspace
+        && let Ok(doc) = ws.read_primary("GREETING.md").await
+        && !doc.content.trim().is_empty()
+    {
+        return doc.content;
+    }
+    BOOTSTRAP_GREETING.to_string()
+}
+// END @FORK
+
 /// Collapse a tool output string into a single-line preview for display.
 pub(crate) fn truncate_for_preview(output: &str, max_chars: usize) -> String {
     let collapsed: String = output
@@ -451,7 +465,10 @@ impl Agent {
                     .await
                     .ok();
                 if let Some(id) = thread_id {
-                    self.persist_assistant_response(id, "gateway", "default", BOOTSTRAP_GREETING)
+                    // BEGIN @FORK linoasclaw: override greeting from workspace
+                    let greeting = resolve_greeting(self.workspace()).await;
+                    // END @FORK
+                    self.persist_assistant_response(id, "gateway", "default", &greeting)
                         .await;
                 }
                 thread_id
@@ -897,7 +914,10 @@ impl Agent {
                 .register_thread("default", "gateway", id, session, None)
                 .await;
 
-            let mut out = OutgoingResponse::text(BOOTSTRAP_GREETING.to_string());
+            // BEGIN @FORK linoasclaw: override greeting from workspace
+            let greeting = resolve_greeting(self.workspace()).await;
+            // END @FORK
+            let mut out = OutgoingResponse::text(greeting);
             out.thread_id = Some(id.to_string());
             let _ = self.channels.broadcast("gateway", "default", out).await;
         }
@@ -1338,10 +1358,13 @@ impl Agent {
                     .get_or_create_assistant_conversation(&message.channel)
                     .await
             {
+                // BEGIN @FORK linoasclaw: override greeting from workspace
+                let greeting = resolve_greeting(tenant.workspace()).await;
+                // END @FORK
                 let _ = store
-                    .add_conversation_message(conv_id, "assistant", BOOTSTRAP_GREETING)
+                    .add_conversation_message(conv_id, "assistant", &greeting)
                     .await;
-                let mut out = OutgoingResponse::text(BOOTSTRAP_GREETING.to_string());
+                let mut out = OutgoingResponse::text(greeting);
                 out.thread_id = Some(conv_id.to_string());
                 let _ = self
                     .channels

@@ -9,6 +9,8 @@ All the changes in this branch must be upstream-compatible and wrapped with `// 
 
 Some changes may add logic that upstream had fixed or changed. Please ask the developer for more information about the changes.
 
+You must push the changes when commited.
+
 Examples: 
 - ```
   // BEGIN @FORK linoasclaw: capture store to mirror notifications into assistant_conversation
